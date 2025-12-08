@@ -1,7 +1,7 @@
 # ariya_elm327_wifi.py
-# Version ajustée avec logique voltage/SOC conditionnelle et conservation des dernières valeurs
+# Version avec cache 30s, réveil ECU si tension basse et lecture SOC corrigée
 
-import socket, time, logging, re
+import socket, time, logging, re, datetime
 from datetime import timedelta
 from homeassistant.helpers.entity import Entity
 from homeassistant.const import (
@@ -63,13 +63,7 @@ class BaseAriyaSensor(Entity):
         self._state = None
         self.hass = hass
 
-    @property
-    def should_poll(self): return True
-    @property
-    def scan_interval(self):
-        return self.hass.data[DOMAIN].get("scan_interval", timedelta(minutes=DEFAULT_SCAN_INTERVAL_MINUTES))
-
-    def _connect_and_query(self, pid, header="ATSHDB33F1"):
+    def _connect_and_query(self, pid, header="ATSHDB33F1", wakeup=False):
         if not check_host(self._ip, self._port):
             _LOGGER.debug("Host %s:%s non joignable", self._ip, self._port)
             return None
@@ -78,8 +72,18 @@ class BaseAriyaSensor(Entity):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((self._ip, self._port))
             # Init sequence
-            for cmd in ["ATZ","ATE0","ATH1","ATSP7","ATCRA18DAF1DB","ATFCSH18DADBF1","ATFCSD300000","ATFCSM1",header]:
+            for cmd in ["ATZ","ATE0","ATH1","ATSP7",
+                        "ATCRA18DAF1DB","ATFCSH18DADBF1",
+                        "ATFCSD300000","ATFCSM1",header]:
                 send(sock, cmd)
+
+            # Réveil ECU si demandé
+            if wakeup:
+                _LOGGER.debug("Envoi séquence réveil ECU")
+                send(sock, "1003")   # Diagnostic Session Control
+                time.sleep(0.2)
+                send(sock, "3E00")   # Tester Present
+
             raw = send(sock, pid)
             return raw
         except Exception as e:
@@ -96,53 +100,53 @@ class SocCoordinator:
         self.hass = hass
         self.soc_bms = None
         self.voltage_12v = None
+        self._last_update = None
 
-    def host_available(self):
-        ip = self.config["elm_ip"]
-        port = self.config["elm_port"]
-        ok = check_host(ip, port)
-        if not ok:
-            _LOGGER.debug("Host %s:%s non joignable, conserve anciennes valeurs", ip, port)
-        return ok
-
-    def update_voltage(self):
-        if not self.host_available():
-            _LOGGER.debug("Voltage 12V inchangé (dernière valeur=%.2f)", self.voltage_12v if self.voltage_12v else -1)
+    def update(self):
+        """Met à jour voltage et SOC avec cache de 30 secondes."""
+        now = datetime.datetime.now()
+        if self._last_update and (now - self._last_update).total_seconds() < 30:
+            _LOGGER.debug("Update déjà effectué il y a %.1f s, réutilise les valeurs",
+                          (now - self._last_update).total_seconds())
             return
-        raw = BaseAriyaSensor(self.config, self.hass)._connect_and_query("ATRV")
-        if raw:
-            m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*[Vv]", raw)
+
+        self._last_update = now
+
+        if not check_host(self.config["elm_ip"], self.config["elm_port"]):
+            _LOGGER.debug("Host non dispo, conserve anciennes valeurs")
+            return
+
+        # Lire le voltage
+        raw_v = BaseAriyaSensor(self.config, self.hass)._connect_and_query("ATRV")
+        if raw_v:
+            m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*[Vv]", raw_v)
             if m:
                 try:
                     self.voltage_12v = round(float(m.group(1).replace(",", ".")), 2)
                     _LOGGER.debug("Voltage 12V lu: %.2f V", self.voltage_12v)
-                    return
                 except Exception as e:
                     _LOGGER.warning("Erreur parsing voltage: %s", e)
-        _LOGGER.debug("Voltage 12V non disponible, conserve ancienne valeur")
 
-    def update_soc(self):
-        if not self.host_available():
-            _LOGGER.debug("Host non dispo, SOC inchangé (dernière valeur=%.2f)", self.soc_bms if self.soc_bms else -1)
-            return
+        # Lire le SOC si inconnu OU si voltage > 12.8
         if self.soc_bms is None or (self.voltage_12v and self.voltage_12v > 12.8):
-            _LOGGER.debug("Lecture SOC déclenchée (voltage=%.2f)", self.voltage_12v if self.voltage_12v else -1)
-            raw = BaseAriyaSensor(self.config, self.hass)._connect_and_query("229001")
-            val = decode_value(raw)
-            if val is not None:
-                self.soc_bms = round(val, 2)
-                _LOGGER.debug("SOC BMS mis à jour: %.2f %%", self.soc_bms)
+            wakeup_needed = self.voltage_12v and self.voltage_12v <= 12.8
+            _LOGGER.debug("Tentative lecture SOC (voltage=%.2f, wakeup=%s)",
+                          self.voltage_12v if self.voltage_12v else -1,
+                          wakeup_needed)
+            raw_soc = BaseAriyaSensor(self.config, self.hass)._connect_and_query("229001",
+                                                                                 wakeup=wakeup_needed)
+            if raw_soc:
+                val = decode_value(raw_soc)
+                if val is not None:
+                    self.soc_bms = round(val, 2)
+                    _LOGGER.debug("SOC BMS mis à jour: %.2f %%", self.soc_bms)
+                else:
+                    _LOGGER.debug("SOC BMS non décodable, conserve ancienne valeur")
             else:
-                _LOGGER.debug("SOC BMS non disponible, conserve ancienne valeur")
-        else:
-            _LOGGER.debug("Lecture SOC ignorée, voltage=%.2f", self.voltage_12v if self.voltage_12v else -1)
+                _LOGGER.debug("Pas de réponse SOC, conserve ancienne valeur")
 
 async def async_setup_entry(hass, entry, async_add_entities):
     data = entry.data
-    options = entry.options
-    scan_interval_minutes = options.get("scan_interval_minutes", DEFAULT_SCAN_INTERVAL_MINUTES)
-    hass.data.setdefault(DOMAIN, {})["scan_interval"] = timedelta(minutes=scan_interval_minutes)
-
     coordinator = SocCoordinator(data, hass)
 
     async_add_entities([
@@ -154,7 +158,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class AriyaSocSensor(Entity):
     should_poll = True
     scan_interval = SCAN_INTERVAL
-    def __init__(self, coordinator): self.coordinator = coordinator; self._state = None
+
+    def __init__(self, coordinator): 
+        self.coordinator = coordinator
+        self._state = None
+
     @property
     def name(self): return "Ariya SOC corrigé"
     @property
@@ -163,9 +171,9 @@ class AriyaSocSensor(Entity):
     def icon(self): return "mdi:battery"
     @property
     def state(self): return self._state
+
     def update(self):
-        self.coordinator.update_voltage()
-        self.coordinator.update_soc()
+        self.coordinator.update()
         if self.coordinator.soc_bms is not None:
             self._state = round(correct_soc(self.coordinator.soc_bms), 2)
         else:
@@ -174,7 +182,11 @@ class AriyaSocSensor(Entity):
 class AriyaSocRawSensor(Entity):
     should_poll = True
     scan_interval = SCAN_INTERVAL
-    def __init__(self, coordinator): self.coordinator = coordinator; self._state = None
+
+    def __init__(self, coordinator): 
+        self.coordinator = coordinator
+        self._state = None
+
     @property
     def name(self): return "Ariya SOC brut"
     @property
@@ -183,15 +195,19 @@ class AriyaSocRawSensor(Entity):
     def icon(self): return "mdi:battery"
     @property
     def state(self): return self._state
+
     def update(self):
-        self.coordinator.update_voltage()
-        self.coordinator.update_soc()
+        self.coordinator.update()
         self._state = self.coordinator.soc_bms
 
 class AriyaElmVoltageSensor(Entity):
     should_poll = True
     scan_interval = SCAN_INTERVAL
-    def __init__(self, coordinator): self.coordinator = coordinator; self._state = None
+
+    def __init__(self, coordinator): 
+        self.coordinator = coordinator
+        self._state = None
+
     @property
     def name(self): return "ELM327 Voltage"
     @property
@@ -200,6 +216,7 @@ class AriyaElmVoltageSensor(Entity):
     def icon(self): return "mdi:flash"
     @property
     def state(self): return self._state
+
     def update(self):
-        self.coordinator.update_voltage()
+        self.coordinator.update()
         self._state = self.coordinator.voltage_12v

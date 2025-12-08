@@ -1,5 +1,5 @@
 # ariya_elm327_wifi
-Need to smart charge my Nissan Ariya an need EV battery in Home Assistant
+Need to smart charge my Nissan Ariya and need EV battery state in Home Assistant
 
 I use Vgate iCar Pro Wifi (ELM 327 OBD-II) and switch configuration to client mode (STA)
 

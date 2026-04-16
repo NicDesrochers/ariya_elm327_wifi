@@ -21,6 +21,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
             AriyaSocSensor(coordinator, entry.entry_id),
             AriyaElmVoltageSensor(coordinator, entry.entry_id),
             AriyaHvVoltageSensor(coordinator, entry.entry_id),
+            AriyaBatteryPowerSensor(coordinator, entry.entry_id),
+            AriyaBatteryTempSensor(coordinator, entry.entry_id),
+            AriyaRemainingEnergySensor(coordinator, entry.entry_id),
+            AriyaBatteryAmpsSensor(coordinator, entry.entry_id),
+            AriyaCurrentSensor(coordinator, entry.entry_id),
         ],
         True,
     )
@@ -91,3 +96,64 @@ class AriyaHvVoltageSensor(BaseAriyaSensor):
     @property
     def native_value(self):
         return self.coordinator.data.get("hv_voltage")
+class AriyaBatteryPowerSensor(BaseAriyaSensor):
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator, entry_id)
+        self._attr_name = "Ariya Battery Power"
+        self._attr_unique_id = f"{entry_id}_battery_power"
+        self._attr_icon = "mdi:lightning-bolt"
+        self._attr_native_unit_of_measurement = "kW"
+        self._attr_device_class = "power"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("battery_power")
+
+class AriyaBatteryTempSensor(BaseAriyaSensor):
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator, entry_id)
+        self._attr_name = "Ariya Battery Temperature"
+        self._attr_unique_id = f"{entry_id}_battery_temp"
+        self._attr_icon = "mdi:thermometer"
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_device_class = "temperature"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("battery_temp")
+
+class AriyaRemainingEnergySensor(BaseAriyaSensor):
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator, entry_id)
+        self._attr_name = "Ariya Remaining Energy"
+        self._attr_unique_id = f"{entry_id}_remaining_kwh"
+        self._attr_icon = "mdi:gauge"
+        self._attr_native_unit_of_measurement = "kWh"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("remaining_kwh")
+
+class AriyaBatteryAmpsSensor(BaseAriyaSensor):
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator, entry_id)
+        self._attr_name = "Ariya Battery Amps"
+        self._attr_unique_id = f"{entry_id}_battery_amps"
+        self._attr_icon = "mdi:current-ac"
+        self._attr_native_unit_of_measurement = "A"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("battery_amps")
+
+class AriyaCurrentSensor(BaseAriyaSensor):
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator, entry_id)
+        self._attr_name = "Ariya Battery Current"
+        self._attr_unique_id = f"{entry_id}_battery_current"
+        self._attr_icon = "mdi:current-ac"
+        self._attr_native_unit_of_measurement = "A"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("current_amps")

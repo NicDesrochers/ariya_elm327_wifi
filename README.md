@@ -12,4 +12,4 @@ Right now ev battery state, and 12v battery from elm327 is working and scan each
 
 To disable power saving on the dongle you can edit disable_powersaving_icar_pro.py and change with you ip address
 
-Local polling of Nissan Ariya and Leaf 2026 SoC and battery data via ELM327 WiFi for Home Assistant. No cloud required.
+Local polling of Nissan Ariya SoC and battery data via ELM327 WiFi for Home Assistant. No cloud required.
